@@ -24,6 +24,19 @@ class Zone:
     metadata: ZoneMetadata
     current_drones: list["Drone"] = field(default_factory=list)
 
+    def entry_cost(self) -> int|float:
+        """Return the number of turns required to enter this zone."""
+        ztype = self.metadata.zone_type
+        if ztype == "priority":
+            return float(0.8)
+        if ztype == "restricted":
+            return 2
+        if ztype == "blocked":
+            raise ValueError("blocked zone has no entry cost")
+            return float('inf')
+            #or we can add in the pahfinding to ignore blocked zones 
+        return 1
+
 
 @dataclass
 class Connection:
@@ -52,7 +65,7 @@ class Network:
     def get_zone(self, name) -> Zone:
         return self.zones[name]
 
-    def neighbors(self, zone_name) -> list[str]:
+    def neighbors(self, zone_name) -> list[Zone]:
         neighbor = []
         for n in self.connections:
             if n.zone_a.name == zone_name:

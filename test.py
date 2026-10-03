@@ -26,7 +26,7 @@ class ParsingError(Exception):
         super().__init__(full_msg)
 
 
-def parse_file(filename):
+def parse_file(filename) -> models.Network:
     zones: dict[str, models.Zone] = {}
     start:          models.Zone | None = None
     end:            models.Zone | None = None
@@ -85,24 +85,30 @@ def parse_file(filename):
                 zone_type = models.ZoneType[meta.get("zone", "normal")]
                 if htype == "start_hub":
                     if start is None:
+                        if zone_type.name == "blocked":
+                            raise ParsingError("start can't be blocked cannot be blocked",
+                                line_num, line)
                         metadata = models.ZoneMetadata(
                             zone_type,
                             meta.get("color"),
                             meta.get("max_drones", 1)
                         )
-                        zones[name] = models.Zone(name, x, y, metadata)
+                        zones[name] = models.Zone(name, int(x), int(y), metadata)
                         start = zones[name]
                     else:
                         raise ParsingError(
                             "start_hub must be unique", line_num, line)
                 elif htype == 'end_hub':
                     if end is None:
+                        if zone_type.name == "blocked":
+                            raise ParsingError("end cannot be blocked",
+                                line_num, line)
                         metadata = models.ZoneMetadata(
                             zone_type,
                             meta.get("color"),
                             meta.get("max_drones", 1)
                         )
-                        zones[name] = models.Zone(name, x, y, metadata)
+                        zones[name] = models.Zone(name, int(x), int(y), metadata)
                         end = zones[name]
 
                     else:
@@ -114,23 +120,36 @@ def parse_file(filename):
                         meta.get("color"),
                         meta.get("max_drones", 1)
                     )
-                    zones[name] = models.Zone(name, x, y, metadata)
+                    zones[name] = models.Zone(name, int(x), int(y), metadata)
                 continue
             m = conn_pattern.fullmatch(stripped)
             if m:
                 z1, z2, meta_str = m.groups()
                 raw_conns.append((z1, z2, meta_str, line_num, line))
-            
+
         seen = set()
         for (z1, z2, meta_str, conn_line_num, conn_line) in raw_conns:
             if z1 not in zones or z2 not in zones:
-                raise ParsingError("connection references unknown zone", conn_line_num, conn_line)
+                raise ParsingError(
+                    "connection references unknown zone",
+                    conn_line_num,
+                    conn_line)
             key = frozenset((z1, z2))
             if key in seen:
-                raise ParsingError("duplicate connection", conn_line_num, conn_line)
+                raise ParsingError(
+                    "duplicate connection",
+                    conn_line_num,
+                    conn_line)
             seen.add(key)
-            meta = parse_metadata("connection", meta_str, conn_line_num, conn_line)
-            conns.append(models.Connection(zones[z1], zones[z2], meta.get("max_link_capacity", 1)))
+            meta = parse_metadata(
+                "connection",
+                meta_str,
+                conn_line_num,
+                conn_line)
+            conns.append(models.Connection(
+                    zones[z1],
+                    zones[z2],
+                    meta.get("max_link_capacity", 1)))
 
     if nb_drones is None:
         raise ParsingError("missing nb_drones", None, None)
@@ -144,32 +163,38 @@ def parse_file(filename):
     return models.Network(nb_drones, start, end, zones, conns)
 
 
-def parse_metadata(context, meta_str, line_num, line):
+def parse_metadata(context, meta_str, line_num, line) -> dict:
     if meta_str is None:
         return {}
     if meta_str.strip() == "":
-        raise ParsingError(f"meta data is set but not filled with anything", line_num, line)
+        raise ParsingError(
+            "meta data is set but not filled with anything",
+            line_num,
+            line)
     d = {}
     for item in meta_str.split():
         if '=' not in item:
-            raise ParsingError(f"meta data must contain value", line_num, line)
+            raise ParsingError("meta data must contain value", line_num, line)
         key, val = item.split('=', 1)
         if key == "color":
-                d[key] = val
+            d[key] = val
         elif key == "max_drones" or key == "max_link_capacity":
             if key == "max_drones" and context == "zone":
                 if val.isdigit() and int(val) > 0:
-                     d[key] = int(val)
+                    d[key] = int(val)
                 else:
                     raise ParsingError("invalid intiger", line_num, line)
 
             elif key == "max_link_capacity" and context == "connection":
                 if val.isdigit() and int(val) > 0:
-                     d[key] = int(val)
+                    d[key] = int(val)
                 else:
                     raise ParsingError("invalid intiger", line_num, line)
             else:
-                raise ParsingError(f"{key} is not valid for {context}", line_num, line)
+                raise ParsingError(
+                    f"{key} is not valid for {context}",
+                    line_num,
+                    line)
 
         elif key == "zone":
             if val in (s.name for s in models.ZoneType):
@@ -181,18 +206,16 @@ def parse_metadata(context, meta_str, line_num, line):
     return d
 
 
-# try:
-#     # nb_drones, start_hub, end_hub, hubs, connections = parse_file("testmap/easy/02_simple_fork.txt")
-#     network = parse_file("testmap/easy/02_simple_fork.txt")
-#     # network = parse_file("testmap/hard/02_capacity_hell.txt")
+try:
+    network = parse_file("testmap/easy/02_simple_fork.txt")
+    # network = parse_file("testmap/hard/02_capacity_hell.txt")
 
-    
-#     print(f"start_hub :{network.start}")
-#     print()
-#     print(f"end_hub :{network.end}")
-#     print()
-#     print(f"hubs list :{network.zones}")
-#     print()
-#     print(f"connections list :{network.connections}")
-# except ParsingError as e:
-#     print(e)
+    print(f"start_hub :{network.start}")
+    print()
+    print(f"end_hub :{network.end}")
+    print()
+    print(f"hubs list :{network.zones}")
+    print()
+    print(f"connections list :{network.connections}")
+except ParsingError as e:
+    print(e)

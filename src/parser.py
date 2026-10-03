@@ -1,8 +1,11 @@
 import re
 from src import models
-import matplotlib.colors as mcolors
+
 
 class ParsingError(Exception):
+    """
+    Custom error class that returns readable and meaningful error msg.
+    """
     def __init__(
         self,
         message: str,
@@ -26,23 +29,32 @@ class ParsingError(Exception):
         super().__init__(full_msg)
 
 
-def raise_error(msg, line_num, line):
-    raise ParsingError(msg, line_num, line)
+def parse_file(filename) -> models.Network:
+    """Reads file and parse it's content.
 
+    Args:
+        filepath: Path to the configuration file.
 
-def parse_file(filename):
-    zones: dict[str, models.Zone] = {} #should be same as raw conns, we fill the data in and them we modify it
+    Returns:
+        network object containing nb_drones,
+        startZone, endZone, zones, connections.
+
+    Raises:
+        ParsingError:
+        if:
+        nb_drones <= 0 or missing
+        start/end/zones if there's an error in the name,
+        coords, or invalid metadata
+        connection if the zone names are invalid, or invalid metadata
+    """
+    zones: dict[str, models.Zone] = {}
     start:          models.Zone | None = None
     end:            models.Zone | None = None
     nb_drones:      int | None = None
-    raw_conns:      list[tuple[str, str, int | None, int, str]] = []
-                    # (z1, z2, meta_str, line_num, line_content)
-    # zonelist: list[str] = []
-    connectionlist: list[tuple[str, str]] = []
-    # meta: dict[str | None, str | None, int | None] = {}
+    raw_conns:      list[tuple[str, str, str | None, int, str]] = []
+    conns:      list[models.Connection] = []
     line_num: int = 0
     line: str | None = None
-
     hub_pattern = re.compile(r'''
         ^(start_hub|end_hub|hub):\s+
         (\S+)\s+
@@ -55,10 +67,9 @@ def parse_file(filename):
     conn_pattern = re.compile(r'''
         ^connection:\s+
         (\S+)-(\S+)
-        (?:\s+\[(max_link_capacity=\d+)\])? #replace with \[([^\]]*)\] in future
+        (?:\s+\[([^\]]*)\])?
         $
     ''', re.VERBOSE)
-
 
     with open(filename, "r") as f:
         for line_num, line in enumerate(f, start=1):
@@ -67,130 +78,168 @@ def parse_file(filename):
                 continue
             m = re.fullmatch(r'^nb_drones:\s*(-?\d+)$', stripped)
             if m:
-                if nb_drones == None:
+                if nb_drones is None:
                     nb_drones = int(m.group(1))
-                    continue
+                    if nb_drones <= 0:
+                        raise ParsingError(
+                            "can't accept zero/negative values for nb_drones",
+                            line_num,
+                            line)
+                    else:
+                        continue
                 else:
-                    raise ParsingError("can't allow duplicate for number of drones", line_num, line)
+                    raise ParsingError(
+                        "can't allow duplicate for nb_drones",
+                        line_num,
+                        line)
 
             if nb_drones is None:
                 raise ParsingError("Missing nb_drones", line_num, line)
-            elif nb_drones <= 0:
-                raise ParsingError("can't accept zero or negative values for nb_drones", line_num, line)
 
             m = hub_pattern.fullmatch(stripped)
             if m:
                 htype, name, x, y, meta_str = m.groups()
-                meta = parse_metadata(meta_str, line_num, line)
+                meta = parse_metadata("zone", meta_str, line_num, line)
+                if name in zones:
+                    raise ParsingError("duplicate zone name", line_num, line)
+                zone_type = models.ZoneType[meta.get("zone", "normal")]
                 if htype == "start_hub":
                     if start is None:
-                        # if meta.get("max_drones")
+                        if zone_type.name == "blocked":
+                            raise ParsingError(
+                                "start cannot be blocked",
+                                line_num,
+                                line)
                         metadata = models.ZoneMetadata(
-                            meta.get("zone"), 
+                            zone_type,
                             meta.get("color"),
-                            meta.get("max_drones")
+                            meta.get("max_drones", 1)
                         )
-                        print(metadata)
-                        # zones = models.Zone(name, x, y, metadata)
-                        zones[name] = models.Zone(name, x, y, metadata)
+                        zones[name] = models.Zone(
+                            name, int(x), int(y), metadata)
                         start = zones[name]
-                        # zonelist.append(name)
                     else:
-                        raise ParsingError("start_hub must be unique", line_num, line)
+                        raise ParsingError(
+                            "start_hub must be unique", line_num, line)
                 elif htype == 'end_hub':
                     if end is None:
+                        if zone_type.name == "blocked":
+                            raise ParsingError(
+                                "end cannot be blocked",
+                                line_num,
+                                line)
                         metadata = models.ZoneMetadata(
-                            meta.get("zone"), 
-                            meta.get("color"), 
-                            meta.get("max_drones")
+                            zone_type,
+                            meta.get("color"),
+                            meta.get("max_drones", 1)
                         )
-                        # zones = models.Zone(name, x, y, metadata)
-                        zones[name] = models.Zone(name, x, y, metadata)
-                        end = models.Zone(name, x, y, metadata)
+                        zones[name] = models.Zone(
+                            name, int(x), int(y), metadata)
+                        end = zones[name]
 
-                        # zonelist.append(name)
                     else:
-                        raise ParsingError("end_hub must be unique", line_num, line)
-                else: 
-                    if name not in zones:
-                        metadata = models.ZoneMetadata(
-                            meta.get("zone"), 
-                            meta.get("color"), 
-                            meta.get("max_drones")
-                        )
-                        # zones = models.Zone(name, x, y, metadata)
-                        zones[name] = models.Zone(name, x, y, metadata)
-
-                        # zonelist.append(name)
-                    else:
-                        raise ParsingError("can't accept hub duplicates", line_num, line)
+                        raise ParsingError(
+                            "end_hub must be unique", line_num, line)
+                else:
+                    metadata = models.ZoneMetadata(
+                        zone_type,
+                        meta.get("color"),
+                        meta.get("max_drones", 1)
+                    )
+                    zones[name] = models.Zone(name, int(x), int(y), metadata)
                 continue
             m = conn_pattern.fullmatch(stripped)
             if m:
                 z1, z2, meta_str = m.groups()
-                if z1 in zones and z2 in zones:
-                    if (z1, z2) not in connectionlist and (z2, z1) not in connectionlist:
-                        if meta_str:
-                            meta = parse_metadata(meta_str, line_num, line)
-                            raw_conns.append((z1, z2, meta.get("maxdrones"), line_num, line))
-                        else:
-                            raw_conns.append((z1, z2, line_num, line))
-                        connectionlist.append((z1,z2))
-                    else:
-                        raise ParsingError("can't accept connection duplicates", line_num, line)
-                else:
-                    raise ParsingError("need to use existing hubs", line_num, line)
-                continue
-            raise ParsingError("invalid line", line_num, line)
-            
+                raw_conns.append((z1, z2, meta_str, line_num, line))
 
-    if line_num == 0 and line == None:
-        raise ParsingError("Missing file content", line_num, line)
-    elif start is None or end is None:
-        raise ParsingError("Missing start or end hub", line_num, line) 
-    return nb_drones, start, end, zones, raw_conns
+        seen = set()
+        for (z1, z2, meta_str, conn_line_num, conn_line) in raw_conns:
+            if z1 not in zones or z2 not in zones:
+                raise ParsingError(
+                    "connection references unknown zone",
+                    conn_line_num,
+                    conn_line)
+            key = frozenset((z1, z2))
+            if key in seen:
+                raise ParsingError(
+                    "duplicate connection",
+                    conn_line_num,
+                    conn_line)
+            seen.add(key)
+            meta = parse_metadata(
+                "connection",
+                meta_str,
+                conn_line_num,
+                conn_line)
+            conns.append(models.Connection(
+                    zones[z1],
+                    zones[z2],
+                    meta.get("max_link_capacity", 1)))
+
+    if nb_drones is None:
+        raise ParsingError("missing nb_drones", None, None)
+    if not zones:
+        raise ParsingError("no zones defined", None, None)
+    if start is None:
+        raise ParsingError("missing start hub", None, None)
+    if end is None:
+        raise ParsingError("missing end hub", None, None)
+
+    return models.Network(nb_drones, start, end, zones, conns)
 
 
-def parse_metadata(meta_str, line_num, line):
+def parse_metadata(context, meta_str, line_num, line) -> dict:
+    """Parse and validate metadata.
+
+    Args:
+        context: to validate metadata based on the type of the object.
+        meta_str: metadata string.
+        line_num/line: number of line and line content
+        to raise a meaningful error when needed.
+    Returns:
+        dict of validated metadata based on the object passed as context.
+
+    Raises:
+        ParsingError: if the matadata is invalid.
+    """
     if meta_str is None:
         return {}
     if meta_str.strip() == "":
-        if isinstance(meta_str, str):
-            raise ParsingError(f"meta data is set but not filled with anything", line_num, line)
-        return {}
+        raise ParsingError(
+            "meta data is set but not filled with anything",
+            line_num,
+            line)
     d = {}
     for item in meta_str.split():
         if '=' not in item:
-            raise ParsingError(f"meta data must contain value", line_num, line)
+            raise ParsingError("meta data must contain value", line_num, line)
         key, val = item.split('=', 1)
         if key == "color":
-                d[key] = val
+            d[key] = val
         elif key == "max_drones" or key == "max_link_capacity":
-            if val is not None and int(val) > 0:
-                 d[key] = val
+            if key == "max_drones" and context == "zone":
+                if val.isdigit() and int(val) > 0:
+                    d[key] = int(val)
+                else:
+                    raise ParsingError("invalid intiger", line_num, line)
+
+            elif key == "max_link_capacity" and context == "connection":
+                if val.isdigit() and int(val) > 0:
+                    d[key] = int(val)
+                else:
+                    raise ParsingError("invalid intiger", line_num, line)
             else:
-                raise ParsingError("invalid intiger", line_num, line)
+                raise ParsingError(
+                    f"{key} is not valid for {context}",
+                    line_num,
+                    line)
+
         elif key == "zone":
-            # d[key] = val
-            # for s in models.ZoneType:
-            # if val is ( "normal" or "blocked" or "restricted" or "priority"):
             if val in (s.name for s in models.ZoneType):
                 d[key] = val
             else:
                 raise ParsingError("zone choice isn't valid", line_num, line)
+        else:
+            raise ParsingError("improper metadata", line_num, line)
     return d
-
-
-
-try:
-    nb_drones, start_hub, end_hub, hubs, connections = parse_file("testmap/easy/02_simple_fork.txt")
-    
-    print(f"start_hub :{start_hub}")
-    print()
-    print(f"end_hub :{end_hub}")
-    print()
-    print(f"hubs list :{hubs}")
-    print()
-    print(f"connections list :{connections}")  
-except ParsingError as e:
-    print(e)
